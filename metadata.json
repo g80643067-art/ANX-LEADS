@@ -1,0 +1,10 @@
+{
+  "name": "ANX Leads - Local Business Lead Finder",
+  "description": "ANX Leads - Search and discover local businesses without websites, prospect high-value offline leads, and view detailed profiles on an interactive map.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
