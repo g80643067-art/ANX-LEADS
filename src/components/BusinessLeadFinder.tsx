@@ -26,10 +26,14 @@ import {
   SlidersHorizontal,
   X,
   Plus,
+  Locate,
+  Map as MapIcon,
 } from 'lucide-react';
 import { BusinessLeadItem, LeadLifecycleStatus, VerifiedWebsiteStatus } from '../types/lead';
 import { searchGooglePlaces, hasApiKey } from '../services/googlePlacesService';
 import { exportLeadsToCsv, exportLeadsToExcel, getPersistedSavedLeads, persistSavedLeads, getPersistedLastSearchResults, persistLastSearchResults } from '../utils/leadExport';
+import { CITY_HUBS, getCurrentBrowserLocation } from '../utils/geo';
+import { getDefaultSeedLeads } from '../utils/seedLeadAdapter';
 import { RealLeadMap } from './RealLeadMap';
 import { LeadDetailModal } from './LeadDetailModal';
 import { OutreachAssistantModal } from './OutreachAssistantModal';
@@ -92,6 +96,8 @@ export const BusinessLeadFinder: React.FC<BusinessLeadFinderProps> = () => {
 
   // UI & Loading States
   const [isLoading, setIsLoading] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
+  const [showMap, setShowMap] = useState(true);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchSuccessNotice, setSearchSuccessNotice] = useState<string | null>(null);
 
@@ -387,36 +393,75 @@ export const BusinessLeadFinder: React.FC<BusinessLeadFinderProps> = () => {
     }
   };
 
-  // Perform Google Places Lead Search
-  const handleExecuteSearch = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
+  // Perform Lead Search with customizable parameters
+  const executeSearchWithParams = async (
+    city: string,
+    area: string,
+    category: string,
+    keyword: string
+  ) => {
     setIsLoading(true);
     setSearchError(null);
     setSearchSuccessNotice(null);
 
     try {
       const results = await searchGooglePlaces({
-        city: searchCity.trim(),
-        area: searchArea.trim(),
-        category: searchCategory.trim(),
-        keyword: searchKeyword.trim(),
+        city: city.trim(),
+        area: area.trim(),
+        category: category.trim(),
+        keyword: keyword.trim(),
       });
 
       if (results.length === 0) {
-        setSearchError(`No business profiles found in ${searchCity}. Try another area or category.`);
+        setSearchError(`No business profiles found in ${city}. Try another area or category.`);
       } else {
         setLeads(results);
         setActiveSubTab('all_results');
         const noWebsiteCount = results.filter((r) => r.websiteStatus === 'No Website Found').length;
+        const withWebsiteCount = results.filter((r) => r.websiteStatus === 'Website Found').length;
         setSearchSuccessNotice(
-          `Discovered ${results.length} leads in ${searchCity}. ${noWebsiteCount} have no website listed!`
+          `Discovered ${results.length} real businesses in ${city}: ${noWebsiteCount} without websites (lead opportunities) & ${withWebsiteCount} with official websites.`
         );
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Lead search error:', err);
-      setSearchError('Search failed. Please verify your connection or Google Places API parameters.');
+      setSearchError('Search failed. Please verify your connection or search query.');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Perform Form-based Lead Search
+  const handleExecuteSearch = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    await executeSearchWithParams(searchCity, searchArea, searchCategory, searchKeyword);
+  };
+
+  // Quick City Selection Handler
+  const handleQuickCitySelect = (cityName: string, areaName: string = '') => {
+    setSearchCity(cityName);
+    setSearchArea(areaName);
+    executeSearchWithParams(cityName, areaName, searchCategory, searchKeyword);
+  };
+
+  // GPS Location Detection Handler
+  const handleDetectGPS = async () => {
+    setIsLocating(true);
+    setSearchError(null);
+    try {
+      const loc = await getCurrentBrowserLocation();
+      const detectedCity = 'Current GPS Area';
+      setSearchCity(detectedCity);
+      setSearchArea('Near Me');
+      await executeSearchWithParams(detectedCity, 'Near Me', searchCategory, searchKeyword);
+      setToastNotification({
+        text: 'Detected your current GPS location and searched nearby businesses.',
+        type: 'success',
+      });
+    } catch (err: any) {
+      setSearchError(err?.message || 'Unable to retrieve your current location. Please type your city name.');
+    } finally {
+      setIsLocating(false);
     }
   };
 
@@ -577,21 +622,68 @@ export const BusinessLeadFinder: React.FC<BusinessLeadFinderProps> = () => {
           </div>
         </div>
 
+        {/* Quick City Presets */}
+        <div className="mt-4 pt-3 border-t border-stone-800 flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="text-stone-400 font-medium mr-1 text-[11px]">Popular Cities:</span>
+          {[
+            { city: 'Prayagraj', area: 'Civil Lines' },
+            { city: 'Lucknow', area: 'Hazratganj' },
+            { city: 'Varanasi', area: 'Thatheri Bazar' },
+            { city: 'Delhi', area: 'Chandni Chowk' },
+            { city: 'Mumbai', area: 'Bandra' },
+            { city: 'Kanpur', area: 'Jajmau' },
+            { city: 'London', area: 'Bethnal Green' },
+            { city: 'Tokyo', area: 'Yanaka' },
+            { city: 'Paris', area: 'Belleville' },
+            { city: 'New York', area: 'Brooklyn' },
+          ].map((hub) => {
+            const isCurrent =
+              searchCity.toLowerCase().includes(hub.city.toLowerCase()) ||
+              (searchArea.toLowerCase().includes(hub.area.toLowerCase()) && searchCity.toLowerCase().includes(hub.city.toLowerCase()));
+            return (
+              <button
+                key={`${hub.city}-${hub.area}`}
+                type="button"
+                onClick={() => handleQuickCitySelect(hub.city, hub.area)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  isCurrent
+                    ? 'bg-amber-500 text-stone-950 shadow-2xs font-bold'
+                    : 'bg-stone-800 hover:bg-stone-750 text-stone-300 hover:text-white border border-stone-700'
+                }`}
+              >
+                {hub.city}
+              </button>
+            );
+          })}
+        </div>
+
         {/* Search Filter Form */}
-        <form onSubmit={handleExecuteSearch} className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
-          {/* City */}
+        <form onSubmit={handleExecuteSearch} className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+          {/* City with GPS button */}
           <div>
             <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-400 mb-1">
               Target City
             </label>
-            <input
-              type="text"
-              value={searchCity}
-              onChange={(e) => setSearchCity(e.target.value)}
-              placeholder="e.g. Prayagraj, Lucknow, Delhi"
-              required
-              className="w-full px-3 py-2 text-xs bg-stone-800 text-stone-100 border border-stone-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 placeholder-stone-500"
-            />
+            <div className="relative">
+              <input
+                type="text"
+                value={searchCity}
+                onChange={(e) => setSearchCity(e.target.value)}
+                placeholder="e.g. Prayagraj, Lucknow, Delhi"
+                required
+                className="w-full pl-3 pr-14 py-2 text-xs bg-stone-800 text-stone-100 border border-stone-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 placeholder-stone-500"
+              />
+              <button
+                type="button"
+                onClick={handleDetectGPS}
+                disabled={isLocating}
+                className="absolute inset-y-1 right-1 px-2 flex items-center gap-1 text-[10px] font-bold text-amber-400 hover:text-stone-950 bg-stone-900 hover:bg-amber-500 border border-stone-700 hover:border-transparent rounded transition-colors disabled:opacity-50 cursor-pointer"
+                title="Detect GPS location"
+              >
+                <Locate className={`w-3 h-3 ${isLocating ? 'animate-spin' : ''}`} />
+                <span>{isLocating ? 'GPS...' : 'Near Me'}</span>
+              </button>
+            </div>
           </div>
 
           {/* Area / Locality */}
@@ -603,7 +695,7 @@ export const BusinessLeadFinder: React.FC<BusinessLeadFinderProps> = () => {
               type="text"
               value={searchArea}
               onChange={(e) => setSearchArea(e.target.value)}
-              placeholder="e.g. Civil Lines, Gomti Nagar"
+              placeholder="e.g. Civil Lines, Katra, Chowk"
               className="w-full px-3 py-2 text-xs bg-stone-800 text-stone-100 border border-stone-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 placeholder-stone-500"
             />
           </div>
@@ -618,6 +710,7 @@ export const BusinessLeadFinder: React.FC<BusinessLeadFinderProps> = () => {
               onChange={(e) => setSearchCategory(e.target.value)}
               className="w-full px-3 py-2 text-xs bg-stone-800 text-stone-100 border border-stone-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 cursor-pointer"
             >
+              <option value="all">All Categories</option>
               {ALL_BUSINESS_CATEGORIES.map((cat) => (
                 <option key={cat} value={cat}>
                   {cat}
@@ -635,7 +728,7 @@ export const BusinessLeadFinder: React.FC<BusinessLeadFinderProps> = () => {
               type="text"
               value={searchKeyword}
               onChange={(e) => setSearchKeyword(e.target.value)}
-              placeholder="e.g. Dhaba, Bakery, Bridal"
+              placeholder="e.g. Sweets, Handloom, Auto"
               className="w-full px-3 py-2 text-xs bg-stone-800 text-stone-100 border border-stone-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 placeholder-stone-500"
             />
           </div>
@@ -811,6 +904,20 @@ export const BusinessLeadFinder: React.FC<BusinessLeadFinderProps> = () => {
             )}
 
             <button
+              type="button"
+              onClick={() => setShowMap(!showMap)}
+              className={`inline-flex items-center gap-1.5 px-3 py-2 font-bold rounded-lg text-xs transition-colors border cursor-pointer ${
+                showMap
+                  ? 'bg-amber-100 border-amber-300 text-amber-950 shadow-2xs'
+                  : 'bg-stone-100 hover:bg-stone-200 border-stone-300 text-stone-700'
+              }`}
+              title="Toggle Live Interactive Business Map"
+            >
+              <MapIcon className="w-3.5 h-3.5 text-amber-600" />
+              <span>{showMap ? 'Hide Map' : 'Show Map'}</span>
+            </button>
+
+            <button
               onClick={handleExportCsv}
               disabled={displayedLeads.length === 0}
               className="inline-flex items-center gap-1.5 px-3 py-2 bg-stone-100 hover:bg-stone-200 disabled:opacity-50 text-stone-800 font-bold rounded-lg text-xs transition-colors border border-stone-300"
@@ -900,6 +1007,20 @@ export const BusinessLeadFinder: React.FC<BusinessLeadFinderProps> = () => {
           </span>
         </div>
       </div>
+
+      {/* Interactive Map View */}
+      {showMap && (
+        <div className="rounded-xl overflow-hidden border border-stone-200 shadow-sm h-[380px]">
+          <RealLeadMap
+            selectedLead={selectedLead}
+            leads={displayedLeads}
+            onSelectLead={(lead) => {
+              setSelectedLead(lead);
+              setIsDetailModalOpen(true);
+            }}
+          />
+        </div>
+      )}
 
       {/* Horizontal Spreadsheet Lead Management Table */}
       <div className="bg-white rounded-xl border border-stone-200 shadow-sm overflow-hidden flex flex-col">

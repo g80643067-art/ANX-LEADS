@@ -7,26 +7,20 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   Menu as MenuIcon,
   Bookmark,
-  Bell,
-  Sparkles,
-  Search,
   Users,
   MessageSquare,
   BarChart3,
   Settings as SettingsIcon,
   LayoutDashboard,
-  ShieldCheck,
 } from 'lucide-react';
 import { BusinessLeadItem } from './types/lead';
 import { BusinessProfile } from './types/business';
 import { SlotsStatusResponse, RegisteredLead } from './types/admin';
 import { fetchSlotsStatus } from './services/adminService';
-import { getStoredBusinesses, getSavedLeadIds, saveSavedLeadIds } from './utils/storage';
 import {
   getPersistedSavedLeads,
   persistSavedLeads,
   getPersistedLastSearchResults,
-  persistLastSearchResults,
 } from './utils/leadExport';
 import { leadItemToBusinessProfile } from './utils/seedLeadAdapter';
 import { Sidebar, NavPage } from './components/Sidebar';
@@ -37,23 +31,9 @@ import { AnalyticsView } from './components/AnalyticsView';
 import { SettingsView } from './components/SettingsView';
 import { SavedLeadsDrawer } from './components/SavedLeadsDrawer';
 import { LeadDetailModal } from './components/LeadDetailModal';
-import { AdminPortal } from './components/AdminPortal';
 import { PublicRegistrationModal } from './components/PublicRegistrationModal';
-import { Lock } from 'lucide-react';
 
 export default function App() {
-  // Check URL for /admin route
-  const [isAdminRoute, setIsAdminRoute] = useState<boolean>(() => {
-    if (typeof window !== 'undefined') {
-      return (
-        window.location.pathname === '/admin' ||
-        window.location.hash === '#/admin' ||
-        window.location.search.includes('view=admin')
-      );
-    }
-    return false;
-  });
-
   // Navigation State
   const [activePage, setActivePage] = useState<NavPage>('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -78,38 +58,6 @@ export default function App() {
 
   // Google Maps quota exceeded flag
   const [quotaExceeded, setQuotaExceeded] = useState(false);
-
-  // Route Synchronization
-  useEffect(() => {
-    const handlePopState = () => {
-      const isAdm =
-        window.location.pathname === '/admin' ||
-        window.location.hash === '#/admin' ||
-        window.location.search.includes('view=admin');
-      setIsAdminRoute(isAdm);
-    };
-
-    window.addEventListener('popstate', handlePopState);
-    window.addEventListener('hashchange', handlePopState);
-    return () => {
-      window.removeEventListener('popstate', handlePopState);
-      window.removeEventListener('hashchange', handlePopState);
-    };
-  }, []);
-
-  const navigateToAdmin = () => {
-    setIsAdminRoute(true);
-    if (window.location.pathname !== '/admin') {
-      window.history.pushState({}, '', '/admin');
-    }
-  };
-
-  const navigateToPublic = () => {
-    setIsAdminRoute(false);
-    if (window.location.pathname === '/admin') {
-      window.history.pushState({}, '', '/');
-    }
-  };
 
   // Load Slot Status from Backend
   const refreshSlots = async () => {
@@ -289,11 +237,6 @@ export default function App() {
     refreshSlots();
   };
 
-  // If user is accessing /admin route, render secure Admin Portal
-  if (isAdminRoute) {
-    return <AdminPortal onBackToPublicWebsite={navigateToPublic} />;
-  }
-
   return (
     <div className="min-h-screen bg-stone-50 text-stone-900 flex flex-row font-sans selection:bg-amber-500 selection:text-stone-950">
       
@@ -306,7 +249,6 @@ export default function App() {
         isMobileOpen={isMobileMenuOpen}
         onCloseMobile={() => setIsMobileMenuOpen(false)}
         totalLeadsCount={leads.length}
-        onOpenAdmin={navigateToAdmin}
       />
 
       {/* Main Content Viewport */}
@@ -376,17 +318,6 @@ export default function App() {
               <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-500 text-stone-950 font-mono">
                 {savedLeads.length}
               </span>
-            </button>
-
-            {/* Admin Portal Direct Trigger */}
-            <button
-              type="button"
-              onClick={navigateToAdmin}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold text-stone-700 hover:text-stone-950 bg-white hover:bg-stone-100 border border-stone-200 transition-colors cursor-pointer"
-              title="Open Secure Admin Portal"
-            >
-              <Lock className="w-3.5 h-3.5 text-emerald-600" />
-              <span className="hidden sm:inline">Admin</span>
             </button>
           </div>
         </header>

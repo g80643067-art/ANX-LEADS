@@ -41,7 +41,7 @@ async function requireAdminAuth(
 }
 
 // ==========================================
-// PUBLIC API ENDPOINTS
+// PUBLIC API ENDPOINTS (2-SLOT REGISTRATION WITH OTP)
 // ==========================================
 
 // GET /api/slots -> Returns live slot counts and statuses
@@ -54,51 +54,104 @@ app.get('/api/slots', async (req, res) => {
   }
 });
 
-// POST /api/leads/register -> Validates & atomically allocates slot in persistent backend DB
-app.post('/api/leads/register', async (req, res) => {
+// POST /api/leads/send-otp -> Step 1 of registration: validates user info & dispatches OTP to WhatsApp
+app.post('/api/leads/send-otp', async (req, res) => {
   try {
-    const { name, phoneNumber, email, businessName, businessCategory, city, notes } = req.body;
+    const { name, whatsappNumber, phoneNumber, email, password, businessName, businessCategory, city, notes } = req.body;
 
-    // Server-side validations
+    const finalPhone = (whatsappNumber || phoneNumber || '').trim();
+
+    // Server-side strict validations
     if (!name || typeof name !== 'string' || name.trim().length < 2) {
-      return res.status(400).json({ error: 'Please enter a valid full name (minimum 2 characters).' });
+      return res.status(400).json({ error: 'Please enter your Full Name (minimum 2 characters).' });
     }
-    if (!phoneNumber || typeof phoneNumber !== 'string' || phoneNumber.trim().length < 7) {
-      return res.status(400).json({ error: 'Please enter a valid contact phone number (minimum 7 digits).' });
+
+    const digitsOnly = finalPhone.replace(/[^0-9]/g, '');
+    if (!finalPhone || digitsOnly.length < 8) {
+      return res.status(400).json({
+        error: 'Please enter a valid WhatsApp number with country code (e.g., +91 98765 43210).',
+      });
     }
+
     if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
       return res.status(400).json({ error: 'Please enter a valid email address.' });
     }
-    if (!businessName || typeof businessName !== 'string' || businessName.trim().length < 2) {
-      return res.status(400).json({ error: 'Please enter your business or establishment name.' });
-    }
-    if (!businessCategory || typeof businessCategory !== 'string') {
-      return res.status(400).json({ error: 'Please select a business category.' });
-    }
-    if (!city || typeof city !== 'string' || city.trim().length < 2) {
-      return res.status(400).json({ error: 'Please enter your city or locality.' });
+
+    if (!password || typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
     }
 
-    const result = await db.registerLead({
-      name,
-      phoneNumber,
-      email,
+    const result = await db.initiateRegistration({
+      name: name.trim(),
+      whatsappNumber: finalPhone,
+      email: email.trim(),
+      password,
       businessName,
       businessCategory,
       city,
       notes,
-      source: 'Public Web Registration Form',
     });
+
+    res.status(200).json({
+      success: true,
+      message: `Verification code sent to WhatsApp (${result.maskedWhatsApp}).`,
+      sessionId: result.sessionId,
+      maskedWhatsApp: result.maskedWhatsApp,
+      expiresInSeconds: result.expiresInSeconds,
+      cooldownSeconds: result.cooldownSeconds,
+      demoOtpPreview: result.demoOtpPreview,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to initiate registration.' });
+  }
+});
+
+// POST /api/leads/resend-otp -> Resends OTP code to WhatsApp with rate limiting
+app.post('/api/leads/resend-otp', async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    if (!sessionId || typeof sessionId !== 'string') {
+      return res.status(400).json({ error: 'Session ID is required to resend OTP.' });
+    }
+
+    const result = await db.resendRegistrationOtp(sessionId);
+    res.json({
+      success: true,
+      message: 'New verification code dispatched to your WhatsApp number.',
+      sessionId: result.sessionId,
+      expiresInSeconds: result.expiresInSeconds,
+      cooldownSeconds: result.cooldownSeconds,
+      demoOtpPreview: result.demoOtpPreview,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to resend verification code.' });
+  }
+});
+
+// POST /api/leads/verify-otp -> Step 2 of registration: verifies OTP, claims available slot, and securely saves user
+app.post('/api/leads/verify-otp', async (req, res) => {
+  try {
+    const { sessionId, otp } = req.body;
+
+    if (!sessionId || typeof sessionId !== 'string') {
+      return res.status(400).json({ error: 'Invalid or missing registration session.' });
+    }
+
+    if (!otp || typeof otp !== 'string' || otp.trim().length !== 6) {
+      return res.status(400).json({ error: 'Please enter the complete 6-digit WhatsApp verification code.' });
+    }
+
+    const result = await db.verifyOtpAndClaimSlot(sessionId, otp);
 
     res.status(201).json({
       success: true,
-      message: `Registration confirmed! Slot #${result.slotNumber} successfully claimed.`,
+      message: `WhatsApp verified successfully! Slot #${result.slotNumber} has been secured.`,
       lead: result.lead,
       slotNumber: result.slotNumber,
       remainingSlots: result.remainingSlots,
     });
   } catch (err: any) {
-    res.status(400).json({ error: err.message || 'Registration failed.' });
+    res.status(400).json({ error: err.message || 'Verification failed.' });
   }
 });
 
@@ -152,96 +205,115 @@ app.post('/api/admin/logout', async (req, res) => {
     }
     res.json({ success: true, message: 'Logged out successfully.' });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Logout error' });
+    res.status(500).json({ error: err.message || 'Logout error.' });
   }
 });
 
 // ==========================================
-// ADMIN PROTECTED CRM & LEADS ENDPOINTS
+// ADMIN PROTECTED DASHBOARD & LEADS API
 // ==========================================
 
-// GET /api/admin/leads -> Get paginated, filtered registered leads (newest first)
-app.get('/api/admin/leads', requireAdminAuth, async (req, res) => {
-  try {
-    const { search, status, category, page, limit } = req.query;
-    const result = await db.getLeads({
-      search: search ? String(search) : undefined,
-      status: status ? String(status) : undefined,
-      category: category ? String(category) : undefined,
-      page: page ? parseInt(String(page), 10) : 1,
-      limit: limit ? parseInt(String(limit), 10) : 10,
-    });
-    res.json(result);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to fetch registered leads.' });
-  }
-});
-
-// GET /api/admin/stats -> Get admin dashboard stats
+// GET /api/admin/stats -> Dashboard metrics & live slot status
 app.get('/api/admin/stats', requireAdminAuth, async (req, res) => {
   try {
     const stats = await db.getAdminStats();
     res.json(stats);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to fetch stats.' });
+    res.status(500).json({ error: err.message || 'Failed to fetch admin stats' });
   }
 });
 
-// POST /api/admin/slots/reset -> Reopen/reset slots
-app.post('/api/admin/slots/reset', requireAdminAuth, async (req, res) => {
+// GET /api/admin/leads -> Query verified registered leads with filters & pagination
+app.get('/api/admin/leads', requireAdminAuth, async (req, res) => {
   try {
-    const { slotNumber } = req.body;
-    const specificSlot = slotNumber ? parseInt(String(slotNumber), 10) : undefined;
-    const slots = await db.resetSlots(specificSlot);
-    res.json({ success: true, slots });
+    const search = req.query.search as string | undefined;
+    const status = req.query.status as string | undefined;
+    const category = req.query.category as string | undefined;
+    const page = parseInt((req.query.page as string) || '1', 10);
+    const limit = parseInt((req.query.limit as string) || '10', 10);
+
+    const result = await db.getLeads({ search, status, category, page, limit });
+    res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to reset slots.' });
+    res.status(500).json({ error: err.message || 'Failed to fetch leads' });
   }
 });
 
-// POST /api/admin/slots/toggle -> Toggle specific slot
-app.post('/api/admin/slots/toggle', requireAdminAuth, async (req, res) => {
-  try {
-    const { slotNumber } = req.body;
-    if (!slotNumber) return res.status(400).json({ error: 'slotNumber is required' });
-    const slot = await db.toggleSlotStatus(parseInt(String(slotNumber), 10));
-    res.json({ success: true, slot });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to toggle slot.' });
-  }
-});
-
-// PUT /api/admin/leads/:id -> Update registered lead
-app.put('/api/admin/leads/:id', requireAdminAuth, async (req, res) => {
+// PATCH /api/admin/leads/:id -> Update lead status or notes
+app.patch('/api/admin/leads/:id', requireAdminAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, notes, name, phoneNumber, email } = req.body;
-    const updated = await db.updateLead(id, { status, notes, name, phoneNumber, email });
+    const { status, notes, name, phoneNumber, whatsappNumber, email } = req.body;
+
+    const updated = await db.updateLead(id, {
+      status,
+      notes,
+      name,
+      phoneNumber,
+      whatsappNumber,
+      email,
+    });
     if (!updated) {
-      return res.status(404).json({ error: 'Lead not found' });
+      return res.status(404).json({ error: 'Lead not found in database.' });
     }
+
     res.json({ success: true, lead: updated });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to update lead.' });
+    res.status(500).json({ error: err.message || 'Failed to update lead' });
   }
 });
 
-// DELETE /api/admin/leads/:id -> Delete registered lead
+// DELETE /api/admin/leads/:id -> Permanently delete lead and release slot
 app.delete('/api/admin/leads/:id', requireAdminAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const deleted = await db.deleteLead(id);
     if (!deleted) {
-      return res.status(404).json({ error: 'Lead not found' });
+      return res.status(404).json({ error: 'Lead not found or already deleted.' });
     }
-    res.json({ success: true, message: 'Lead deleted successfully' });
+
+    res.json({ success: true, message: 'Lead permanently deleted from database.' });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to delete lead.' });
+    res.status(500).json({ error: err.message || 'Failed to delete lead' });
+  }
+});
+
+// POST /api/admin/slots/reset -> Reopen slots (optional slotNumber in body)
+app.post('/api/admin/slots/reset', requireAdminAuth, async (req, res) => {
+  try {
+    const { slotNumber } = req.body;
+    const updated = await db.resetSlots(slotNumber ? parseInt(slotNumber, 10) : undefined);
+    res.json({
+      success: true,
+      message: slotNumber ? `Slot #${slotNumber} reopened.` : 'All 2 slots reset to available.',
+      slotsConfig: updated,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to reset slots' });
+  }
+});
+
+// POST /api/admin/slots/toggle -> Manually lock or release slot
+app.post('/api/admin/slots/toggle', requireAdminAuth, async (req, res) => {
+  try {
+    const { slotNumber } = req.body;
+    if (!slotNumber) {
+      return res.status(400).json({ error: 'Slot number is required.' });
+    }
+
+    const slot = await db.toggleSlotStatus(parseInt(slotNumber, 10));
+    if (!slot) {
+      return res.status(404).json({ error: 'Slot not found.' });
+    }
+
+    res.json({ success: true, slot });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to toggle slot' });
   }
 });
 
 // ==========================================
-// VITE SPA INTEGRATION
+// VITE CLIENT MIDDLEWARE & SERVER STARTUP
 // ==========================================
 
 async function startServer() {
@@ -252,17 +324,18 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static('dist'));
+    const distPath = path.resolve(process.cwd(), 'dist');
+    app.use(express.static(distPath));
     app.get('*', (req, res) => {
-      res.sendFile(path.resolve(process.cwd(), 'dist', 'index.html'));
+      res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`ANX Leads Server running on http://0.0.0.0:${PORT}`);
+    console.log(`[ANX Backend] Server is running on port ${PORT}`);
   });
 }
 
 startServer().catch((err) => {
-  console.error('Failed to start server:', err);
+  console.error('[Server Error] Failed to start server:', err);
 });

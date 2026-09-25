@@ -6,7 +6,10 @@ export interface RegisteredLead {
   id: string;
   name: string;
   phoneNumber: string;
+  whatsappNumber: string;
   email: string;
+  passwordHash?: string;
+  salt?: string;
   businessName: string;
   businessCategory: string;
   city: string;
@@ -15,6 +18,7 @@ export interface RegisteredLead {
   slotNumber: number;
   status: 'New' | 'Contacted' | 'In Progress' | 'Qualified' | 'Closed' | 'Archived';
   source?: string;
+  isVerified?: boolean;
 }
 
 export interface SlotItem {
@@ -50,6 +54,24 @@ export interface AdminSession {
   expiresAt: string;
 }
 
+export interface PendingOtpSession {
+  sessionId: string;
+  name: string;
+  whatsappNumber: string;
+  email: string;
+  passwordHash: string;
+  salt: string;
+  businessName: string;
+  businessCategory: string;
+  city: string;
+  notes?: string;
+  otp: string;
+  expiresAt: number; // timestamp ms
+  attemptsLeft: number;
+  createdAt: number;
+  lastSentAt: number;
+}
+
 export interface DatabaseSchema {
   leads: RegisteredLead[];
   slotsConfig: SlotsConfig;
@@ -63,40 +85,72 @@ const DB_FILE = path.join(DB_DIR, 'leads_db.json');
 // Mutex lock for thread-safe slot allocation
 let mutexPromise: Promise<void> = Promise.resolve();
 
-function hashPassword(password: string, salt: string): string {
+// In-memory active OTP verification sessions with automatic cleanup
+const pendingOtpSessions = new Map<string, PendingOtpSession>();
+
+// Cleanup expired OTP sessions every 2 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, session] of pendingOtpSessions.entries()) {
+    if (session.expiresAt < now) {
+      pendingOtpSessions.delete(key);
+    }
+  }
+}, 120000);
+
+export function hashPassword(password: string, salt: string): string {
   return crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
+}
+
+export function generateSalt(): string {
+  return crypto.randomBytes(16).toString('hex');
 }
 
 function generateToken(): string {
   return crypto.randomBytes(32).toString('hex');
 }
 
+// Generate secure 6-digit numeric OTP
+export function generateNumericOtp(): string {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
 // Default initial state
 function getDefaultDb(): DatabaseSchema {
-  const defaultSalt = crypto.randomBytes(16).toString('hex');
+  const defaultSalt = generateSalt();
   const defaultPassword = process.env.ADMIN_PASSWORD || 'Admin@ANX2026!';
   const defaultHash = hashPassword(defaultPassword, defaultSalt);
+
+  const lead1Salt = generateSalt();
+  const lead2Salt = generateSalt();
 
   const initialLeads: RegisteredLead[] = [
     {
       id: 'lead-1711200001-a1b2',
       name: 'Rajesh Sharma',
       phoneNumber: '+91 98390 12345',
+      whatsappNumber: '+91 98390 12345',
       email: 'rajesh.sharma@lucknowsweets.in',
+      passwordHash: hashPassword('Customer@123', lead1Salt),
+      salt: lead1Salt,
       businessName: 'Sharma Sweets & Bakers',
       businessCategory: 'Restaurant / Food',
       city: 'Lucknow',
-      notes: 'Interested in digital ordering system and professional storefront website.',
+      notes: 'Interested in digital ordering system and storefront website.',
       registeredAt: new Date(Date.now() - 3600000 * 2).toISOString(),
       slotNumber: 1,
       status: 'New',
       source: 'Direct Web Registration',
+      isVerified: true,
     },
     {
       id: 'lead-1711100002-c3d4',
       name: 'Pooja Verma',
       phoneNumber: '+91 94500 67890',
+      whatsappNumber: '+91 94500 67890',
       email: 'pooja.verma@glamourparlour.com',
+      passwordHash: hashPassword('Customer@456', lead2Salt),
+      salt: lead2Salt,
       businessName: 'Glamour Beauty & Bridal Studio',
       businessCategory: 'Beauty Parlour / Salon',
       city: 'Prayagraj',
@@ -105,6 +159,7 @@ function getDefaultDb(): DatabaseSchema {
       slotNumber: 2,
       status: 'Contacted',
       source: 'Direct Web Registration',
+      isVerified: true,
     },
   ];
 
@@ -145,7 +200,13 @@ function getDefaultDb(): DatabaseSchema {
   };
 }
 
-// Database helper functions
+// Sanitize lead object before returning to frontend or admin
+export function sanitizeLead(lead: RegisteredLead): Omit<RegisteredLead, 'passwordHash' | 'salt'> {
+  const { passwordHash, salt, ...safe } = lead;
+  return safe;
+}
+
+// Database singleton helper
 export class Database {
   private static instance: Database;
 
@@ -196,7 +257,6 @@ export class Database {
       fs.renameSync(tempPath, DB_FILE);
     } catch (err) {
       console.error('[DB] Atomic write failed:', err);
-      // Fallback direct write
       fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
     }
   }
@@ -216,7 +276,9 @@ export class Database {
     }
   }
 
+  // ==========================================
   // PUBLIC SLOTS METHODS
+  // ==========================================
   public async getSlotsStatus(): Promise<{
     totalSlots: number;
     occupiedSlots: number;
@@ -239,54 +301,198 @@ export class Database {
     });
   }
 
-  // ATOMIC REGISTRATION & SLOT CLAIM
-  public async registerLead(payload: {
+  // ==========================================
+  // OTP REGISTRATION PIPELINE
+  // ==========================================
+
+  // Step 1: Initiate registration & generate WhatsApp OTP
+  public async initiateRegistration(payload: {
     name: string;
-    phoneNumber: string;
+    whatsappNumber: string;
     email: string;
-    businessName: string;
-    businessCategory: string;
-    city: string;
+    password: string;
+    businessName?: string;
+    businessCategory?: string;
+    city?: string;
     notes?: string;
-    source?: string;
   }): Promise<{
+    sessionId: string;
+    maskedWhatsApp: string;
+    expiresInSeconds: number;
+    cooldownSeconds: number;
+    demoOtpPreview: string;
+  }> {
+    return this.lock(async () => {
+      const db = this.readSync();
+      const slots = db.slotsConfig.slots || [];
+      const availableSlots = slots.filter((s) => !s.isOccupied).length;
+
+      if (availableSlots <= 0) {
+        throw new Error('All 2 registration slots are currently occupied. Please try again when a slot is reopened.');
+      }
+
+      const cleanWhatsApp = payload.whatsappNumber.trim();
+      const normalizedPhone = cleanWhatsApp.replace(/[^0-9+]/g, '');
+
+      // Check rate limiting on existing sessions for this phone number (minimum 30 seconds cooldown)
+      const now = Date.now();
+      for (const [existingId, existingSession] of pendingOtpSessions.entries()) {
+        if (existingSession.whatsappNumber === cleanWhatsApp) {
+          if (now - existingSession.lastSentAt < 30000) {
+            const waitTime = Math.ceil((30000 - (now - existingSession.lastSentAt)) / 1000);
+            throw new Error(`Please wait ${waitTime} seconds before requesting a new WhatsApp OTP.`);
+          }
+          // Remove previous session
+          pendingOtpSessions.delete(existingId);
+        }
+      }
+
+      // Generate secure 6-digit OTP code & session ID
+      const otpCode = generateNumericOtp();
+      const sessionId = `reg-sess-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
+      const salt = generateSalt();
+      const passwordHash = hashPassword(payload.password, salt);
+
+      const otpSession: PendingOtpSession = {
+        sessionId,
+        name: payload.name.trim(),
+        whatsappNumber: cleanWhatsApp,
+        email: payload.email.trim().toLowerCase(),
+        passwordHash,
+        salt,
+        businessName: (payload.businessName || `${payload.name.trim()}'s Business`).trim(),
+        businessCategory: payload.businessCategory?.trim() || 'General Business',
+        city: payload.city?.trim() || 'India',
+        notes: payload.notes?.trim() || '',
+        otp: otpCode,
+        expiresAt: now + 5 * 60 * 1000, // 5 minutes expiry
+        attemptsLeft: 5,
+        createdAt: now,
+        lastSentAt: now,
+      };
+
+      pendingOtpSessions.set(sessionId, otpSession);
+
+      // Mask phone for secure UI display (e.g., "+91 ******3210")
+      const digits = normalizedPhone;
+      const masked =
+        digits.length > 4
+          ? digits.slice(0, 3) + ' ' + '*'.repeat(Math.max(0, digits.length - 6)) + digits.slice(-3)
+          : digits;
+
+      return {
+        sessionId,
+        maskedWhatsApp: masked,
+        expiresInSeconds: 300,
+        cooldownSeconds: 30,
+        demoOtpPreview: otpCode,
+      };
+    });
+  }
+
+  // Step 2: Resend OTP to WhatsApp
+  public async resendRegistrationOtp(sessionId: string): Promise<{
+    sessionId: string;
+    expiresInSeconds: number;
+    cooldownSeconds: number;
+    demoOtpPreview: string;
+  }> {
+    const session = pendingOtpSessions.get(sessionId);
+    if (!session) {
+      throw new Error('Registration session expired or not found. Please fill out the registration form again.');
+    }
+
+    const now = Date.now();
+    if (now - session.lastSentAt < 30000) {
+      const waitTime = Math.ceil((30000 - (now - session.lastSentAt)) / 1000);
+      throw new Error(`Please wait ${waitTime} seconds before resending WhatsApp OTP.`);
+    }
+
+    const newOtp = generateNumericOtp();
+    session.otp = newOtp;
+    session.expiresAt = now + 5 * 60 * 1000;
+    session.attemptsLeft = 5;
+    session.lastSentAt = now;
+
+    return {
+      sessionId,
+      expiresInSeconds: 300,
+      cooldownSeconds: 30,
+      demoOtpPreview: newOtp,
+    };
+  }
+
+  // Step 3: Verify OTP, atomically claim open slot & store permanently in DB
+  public async verifyOtpAndClaimSlot(
+    sessionId: string,
+    submittedOtp: string
+  ): Promise<{
     success: boolean;
-    lead: RegisteredLead;
+    lead: Omit<RegisteredLead, 'passwordHash' | 'salt'>;
     slotNumber: number;
     remainingSlots: number;
   }> {
     return this.lock(async () => {
-      const db = this.readSync();
-      const slots = db.slotsConfig.slots;
+      const session = pendingOtpSessions.get(sessionId);
+      if (!session) {
+        throw new Error('Registration session expired or invalid. Please request a new verification code.');
+      }
 
-      // Find first available slot
+      const now = Date.now();
+      if (now > session.expiresAt) {
+        pendingOtpSessions.delete(sessionId);
+        throw new Error('WhatsApp OTP has expired. Please request a new verification code.');
+      }
+
+      if (session.attemptsLeft <= 0) {
+        pendingOtpSessions.delete(sessionId);
+        throw new Error('Too many invalid attempts. Please restart your registration.');
+      }
+
+      const cleanOtp = submittedOtp.trim();
+      if (cleanOtp !== session.otp) {
+        session.attemptsLeft -= 1;
+        throw new Error(
+          `Invalid verification code. ${session.attemptsLeft} attempt(s) remaining. Please check your WhatsApp code.`
+        );
+      }
+
+      // OTP is valid! Now atomically check and claim first available slot
+      const db = this.readSync();
+      const slots = db.slotsConfig.slots || [];
       const availableSlot = slots.find((s) => !s.isOccupied);
+
       if (!availableSlot) {
-        throw new Error('All registration slots are currently occupied. Please check back shortly or contact the administrator.');
+        pendingOtpSessions.delete(sessionId);
+        throw new Error('All registration slots were just occupied. Please contact support or check back later.');
       }
 
       const newLeadId = `lead-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
       const slotNum = availableSlot.slotNumber;
 
-      // Occupy slot
+      // Occupy slot atomically in DB
       availableSlot.isOccupied = true;
-      availableSlot.claimedBy = payload.name.trim();
+      availableSlot.claimedBy = session.name;
       availableSlot.claimedLeadId = newLeadId;
       availableSlot.claimedAt = new Date().toISOString();
 
       const newLead: RegisteredLead = {
         id: newLeadId,
-        name: payload.name.trim(),
-        phoneNumber: payload.phoneNumber.trim(),
-        email: payload.email.trim(),
-        businessName: payload.businessName.trim(),
-        businessCategory: payload.businessCategory.trim(),
-        city: payload.city.trim(),
-        notes: payload.notes?.trim() || '',
+        name: session.name,
+        phoneNumber: session.whatsappNumber,
+        whatsappNumber: session.whatsappNumber,
+        email: session.email,
+        passwordHash: session.passwordHash,
+        salt: session.salt,
+        businessName: session.businessName,
+        businessCategory: session.businessCategory,
+        city: session.city,
+        notes: session.notes,
         registeredAt: new Date().toISOString(),
         slotNumber: slotNum,
         status: 'New',
-        source: payload.source || 'Public Web Form',
+        source: 'WhatsApp Verified Registration',
+        isVerified: true,
       };
 
       // Add to front of leads list (newest first)
@@ -294,19 +500,24 @@ export class Database {
 
       this.writeSync(db);
 
+      // Clean up session
+      pendingOtpSessions.delete(sessionId);
+
       const occupiedCount = slots.filter((s) => s.isOccupied).length;
       const remaining = Math.max(0, db.slotsConfig.totalSlots - occupiedCount);
 
       return {
         success: true,
-        lead: newLead,
+        lead: sanitizeLead(newLead),
         slotNumber: slotNum,
         remainingSlots: remaining,
       };
     });
   }
 
+  // ==========================================
   // ADMIN AUTHENTICATION
+  // ==========================================
   public async authenticateAdmin(
     usernameOrEmail: string,
     passwordAttempt: string
@@ -376,7 +587,9 @@ export class Database {
     });
   }
 
-  // ADMIN LEADS MANAGEMENT
+  // ==========================================
+  // ADMIN LEADS MANAGEMENT (SANITIZED)
+  // ==========================================
   public async getLeads(options?: {
     search?: string;
     status?: string;
@@ -384,7 +597,7 @@ export class Database {
     page?: number;
     limit?: number;
   }): Promise<{
-    leads: RegisteredLead[];
+    leads: Array<Omit<RegisteredLead, 'passwordHash' | 'salt'>>;
     total: number;
     page: number;
     limit: number;
@@ -403,11 +616,12 @@ export class Database {
         list = list.filter(
           (l) =>
             l.name.toLowerCase().includes(query) ||
-            l.phoneNumber.toLowerCase().includes(query) ||
+            (l.whatsappNumber && l.whatsappNumber.toLowerCase().includes(query)) ||
+            (l.phoneNumber && l.phoneNumber.toLowerCase().includes(query)) ||
             l.email.toLowerCase().includes(query) ||
-            l.businessName.toLowerCase().includes(query) ||
-            l.city.toLowerCase().includes(query) ||
-            l.businessCategory.toLowerCase().includes(query)
+            (l.businessName && l.businessName.toLowerCase().includes(query)) ||
+            (l.city && l.city.toLowerCase().includes(query)) ||
+            (l.businessCategory && l.businessCategory.toLowerCase().includes(query))
         );
       }
 
@@ -430,8 +644,11 @@ export class Database {
       const startIndex = (page - 1) * limit;
       const paginated = list.slice(startIndex, startIndex + limit);
 
+      // NEVER expose passwordHash or salt to admin responses
+      const sanitizedList = paginated.map(sanitizeLead);
+
       return {
-        leads: paginated,
+        leads: sanitizedList,
         total,
         page,
         limit,
@@ -442,8 +659,8 @@ export class Database {
 
   public async updateLead(
     id: string,
-    updates: Partial<Pick<RegisteredLead, 'status' | 'notes' | 'name' | 'phoneNumber' | 'email'>>
-  ): Promise<RegisteredLead | null> {
+    updates: Partial<Pick<RegisteredLead, 'status' | 'notes' | 'name' | 'phoneNumber' | 'whatsappNumber' | 'email'>>
+  ): Promise<Omit<RegisteredLead, 'passwordHash' | 'salt'> | null> {
     return this.lock(() => {
       const db = this.readSync();
       const index = db.leads.findIndex((l) => l.id === id);
@@ -455,7 +672,7 @@ export class Database {
       };
 
       this.writeSync(db);
-      return db.leads[index];
+      return sanitizeLead(db.leads[index]);
     });
   }
 
@@ -480,7 +697,9 @@ export class Database {
     });
   }
 
+  // ==========================================
   // ADMIN SLOTS MANAGEMENT
+  // ==========================================
   public async resetSlots(specificSlotNumber?: number): Promise<SlotsConfig> {
     return this.lock(() => {
       const db = this.readSync();
@@ -532,13 +751,15 @@ export class Database {
     });
   }
 
-  // ADMIN STATS
+  // ==========================================
+  // ADMIN STATS (SANITIZED)
+  // ==========================================
   public async getAdminStats(): Promise<{
     totalLeads: number;
     availableSlots: number;
     occupiedSlots: number;
     totalSlots: number;
-    recentLeads: RegisteredLead[];
+    recentLeads: Array<Omit<RegisteredLead, 'passwordHash' | 'salt'>>;
     statusBreakdown: Record<string, number>;
     slots: SlotItem[];
   }> {
@@ -555,7 +776,7 @@ export class Database {
       const sorted = [...leads].sort(
         (a, b) => new Date(b.registeredAt).getTime() - new Date(a.registeredAt).getTime()
       );
-      const recentLeads = sorted.slice(0, 5);
+      const recentLeads = sorted.slice(0, 5).map(sanitizeLead);
 
       const statusBreakdown: Record<string, number> = {
         New: 0,

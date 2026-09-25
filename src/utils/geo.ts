@@ -12,7 +12,8 @@ export interface CityHub {
 }
 
 export const CITY_HUBS: CityHub[] = [
-  // Primary Indian Cities requested by user
+  // Primary Indian Cities
+  { name: 'prayagraj', label: 'Prayagraj (Allahabad), UP', country: 'India', coords: { lat: 25.4358, lng: 81.8463 } },
   { name: 'lucknow', label: 'Lucknow, Uttar Pradesh', country: 'India', coords: { lat: 26.8467, lng: 80.9462 } },
   { name: 'varanasi', label: 'Varanasi, Uttar Pradesh', country: 'India', coords: { lat: 25.3176, lng: 82.9739 } },
   { name: 'delhi', label: 'New Delhi & NCR', country: 'India', coords: { lat: 28.6139, lng: 77.2090 } },
@@ -22,7 +23,7 @@ export const CITY_HUBS: CityHub[] = [
   { name: 'bengaluru', label: 'Bengaluru, Karnataka', country: 'India', coords: { lat: 12.9716, lng: 77.5946 } },
   { name: 'kolkata', label: 'Kolkata, West Bengal', country: 'India', coords: { lat: 22.5726, lng: 88.3639 } },
   
-  // International Hubs without websites showcase
+  // International Hubs
   { name: 'tokyo', label: 'Tokyo (Asakusa & Yanaka)', country: 'Japan', isInternational: true, coords: { lat: 35.7148, lng: 139.7967 } },
   { name: 'london', label: 'London (East End & Soho)', country: 'United Kingdom', isInternational: true, coords: { lat: 51.5074, lng: -0.1278 } },
   { name: 'paris', label: 'Paris (Belleville & Marais)', country: 'France', isInternational: true, coords: { lat: 48.8566, lng: 2.3522 } },
@@ -75,6 +76,25 @@ export function resolveLocationQuery(query: string): GeoPoint | null {
   }
 
   // 2. Localities and neighborhoods in Uttar Pradesh & India
+  // Prayagraj (Allahabad) localities
+  if (
+    normalized.includes('prayagraj') ||
+    normalized.includes('allahabad') ||
+    normalized.includes('civil lines prayagraj') ||
+    normalized.includes('civil lines allahabad') ||
+    normalized.includes('civil lines') ||
+    normalized.includes('katra') ||
+    normalized.includes('chowk prayagraj') ||
+    normalized.includes('chowk allahabad') ||
+    normalized.includes('naini') ||
+    normalized.includes('johnstonganj') ||
+    normalized.includes('georgetown') ||
+    normalized.includes('ashok nagar') ||
+    normalized.includes('sangam')
+  ) {
+    return { lat: 25.4358, lng: 81.8463 };
+  }
+
   // Lucknow localities
   if (normalized.includes('hazratganj') || normalized.includes('aminabad') || normalized.includes('chowk lucknow') || normalized.includes('gomti nagar') || normalized.includes('alambagh') || normalized.includes('indira nagar')) {
     return { lat: 26.8500, lng: 80.9400 };

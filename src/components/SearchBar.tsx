@@ -97,7 +97,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                     setFilters((prev) => ({ ...prev, centerCoords: autoMatch }));
                   }
                 }}
-                placeholder="Type location: Lucknow, Varanasi, Delhi, Tokyo, London..."
+                placeholder="Type location: Prayagraj, Lucknow, Varanasi, Delhi, Tokyo, London..."
                 className="w-full pl-10 pr-24 py-2.5 bg-stone-50 border border-stone-300 rounded-lg text-sm text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-amber-500 transition-all"
               />
               <button
@@ -135,7 +135,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
               )}
             </div>
 
-            {/* Category Dropdown */}
+            {/* Category Dropdown & Submit */}
             <div className="md:col-span-3 flex gap-2">
               <select
                 value={filters.category}
@@ -149,6 +149,16 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                   </option>
                 ))}
               </select>
+
+              {/* Submit Search Button */}
+              <button
+                type="submit"
+                className="px-3.5 py-2.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg text-xs transition-colors flex items-center gap-1 shrink-0 shadow-2xs cursor-pointer"
+                title="Execute Search"
+              >
+                <Search className="w-3.5 h-3.5" />
+                <span>Search</span>
+              </button>
 
               {/* Filter Panel Toggle */}
               <button

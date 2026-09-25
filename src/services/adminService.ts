@@ -1,6 +1,9 @@
 import {
   SlotsStatusResponse,
-  PublicLeadRegistrationPayload,
+  InitiateOtpRegistrationPayload,
+  InitiateOtpResponse,
+  VerifyOtpPayload,
+  VerifyOtpResponse,
   AdminAuthResponse,
   LeadsListResponse,
   AdminStatsResponse,
@@ -53,7 +56,7 @@ function getAuthHeaders(): HeadersInit {
 }
 
 // ==========================================
-// PUBLIC API CALLS
+// PUBLIC API CALLS (2-SLOT OTP REGISTRATION)
 // ==========================================
 
 export async function fetchSlotsStatus(): Promise<SlotsStatusResponse> {
@@ -68,16 +71,11 @@ export async function fetchSlotsStatus(): Promise<SlotsStatusResponse> {
   return res.json();
 }
 
-export async function registerPublicLead(
-  payload: PublicLeadRegistrationPayload
-): Promise<{
-  success: boolean;
-  message: string;
-  lead: RegisteredLead;
-  slotNumber: number;
-  remainingSlots: number;
-}> {
-  const res = await fetch('/api/leads/register', {
+// Step 1: Send OTP to WhatsApp
+export async function sendRegistrationOtp(
+  payload: InitiateOtpRegistrationPayload
+): Promise<InitiateOtpResponse> {
+  const res = await fetch('/api/leads/send-otp', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -85,7 +83,41 @@ export async function registerPublicLead(
 
   const data = await res.json();
   if (!res.ok || !data.success) {
-    throw new Error(data.error || 'Registration failed');
+    throw new Error(data.error || 'Failed to send WhatsApp verification code');
+  }
+  return data;
+}
+
+// Step 2: Resend OTP to WhatsApp
+export async function resendRegistrationOtp(
+  sessionId: string
+): Promise<InitiateOtpResponse> {
+  const res = await fetch('/api/leads/resend-otp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId }),
+  });
+
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Failed to resend verification code');
+  }
+  return data;
+}
+
+// Step 3: Verify OTP & Claim Slot
+export async function verifyRegistrationOtp(
+  payload: VerifyOtpPayload
+): Promise<VerifyOtpResponse> {
+  const res = await fetch('/api/leads/verify-otp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'OTP verification failed');
   }
   return data;
 }
@@ -154,53 +186,75 @@ export async function fetchAdminStats(): Promise<AdminStatsResponse> {
     method: 'GET',
     headers: getAuthHeaders(),
   });
-
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to fetch admin stats');
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'Failed to fetch admin stats');
   }
-
   return res.json();
 }
 
-export async function fetchAdminLeads(options?: {
+export async function fetchAdminLeads(params?: {
   search?: string;
   status?: string;
   category?: string;
   page?: number;
   limit?: number;
 }): Promise<LeadsListResponse> {
-  const params = new URLSearchParams();
-  if (options?.search) params.set('search', options.search);
-  if (options?.status && options.status !== 'All') params.set('status', options.status);
-  if (options?.category && options.category !== 'All') params.set('category', options.category);
-  if (options?.page) params.set('page', String(options.page));
-  if (options?.limit) params.set('limit', String(options.limit));
+  const query = new URLSearchParams();
+  if (params?.search) query.set('search', params.search);
+  if (params?.status && params.status !== 'All') query.set('status', params.status);
+  if (params?.category && params.category !== 'All') query.set('category', params.category);
+  if (params?.page) query.set('page', params.page.toString());
+  if (params?.limit) query.set('limit', params.limit.toString());
 
-  const url = `/api/admin/leads?${params.toString()}`;
-  const res = await fetch(url, {
+  const res = await fetch(`/api/admin/leads?${query.toString()}`, {
     method: 'GET',
     headers: getAuthHeaders(),
   });
-
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to fetch admin leads');
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'Failed to fetch leads');
   }
-
   return res.json();
 }
 
-export async function resetAdminSlots(slotNumber?: number): Promise<void> {
+export async function updateAdminLeadStatus(
+  leadId: string,
+  status: LeadStatus,
+  notes?: string
+): Promise<RegisteredLead> {
+  const res = await fetch(`/api/admin/leads/${leadId}`, {
+    method: 'PATCH',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ status, notes }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Failed to update lead');
+  }
+  return data.lead;
+}
+
+export async function deleteAdminLead(leadId: string): Promise<void> {
+  const res = await fetch(`/api/admin/leads/${leadId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Failed to delete lead');
+  }
+}
+
+export async function resetAdminSlots(specificSlotNumber?: number): Promise<void> {
   const res = await fetch('/api/admin/slots/reset', {
     method: 'POST',
     headers: getAuthHeaders(),
-    body: JSON.stringify({ slotNumber }),
+    body: JSON.stringify({ slotNumber: specificSlotNumber }),
   });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to reset slots');
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Failed to reset slots');
   }
 }
 
@@ -210,41 +264,8 @@ export async function toggleAdminSlot(slotNumber: number): Promise<void> {
     headers: getAuthHeaders(),
     body: JSON.stringify({ slotNumber }),
   });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to toggle slot');
-  }
-}
-
-export async function updateAdminLeadStatus(
-  id: string,
-  status: LeadStatus,
-  notes?: string
-): Promise<RegisteredLead> {
-  const res = await fetch(`/api/admin/leads/${id}`, {
-    method: 'PUT',
-    headers: getAuthHeaders(),
-    body: JSON.stringify({ status, notes }),
-  });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to update lead');
-  }
-
   const data = await res.json();
-  return data.lead;
-}
-
-export async function deleteAdminLead(id: string): Promise<void> {
-  const res = await fetch(`/api/admin/leads/${id}`, {
-    method: 'DELETE',
-    headers: getAuthHeaders(),
-  });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to delete lead');
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Failed to toggle slot');
   }
 }

@@ -84,5 +84,5 @@ export function leadItemToBusinessProfile(lead: BusinessLeadItem): BusinessProfi
 }
 
 export function getDefaultSeedLeads(): BusinessLeadItem[] {
-  return INITIAL_BUSINESSES.slice(0, 18).map(businessProfileToLeadItem);
+  return INITIAL_BUSINESSES.map(businessProfileToLeadItem);
 }

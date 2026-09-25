@@ -10,6 +10,7 @@ export interface RegisteredLead {
   id: string;
   name: string;
   phoneNumber: string;
+  whatsappNumber?: string;
   email: string;
   businessName: string;
   businessCategory: string;
@@ -19,6 +20,7 @@ export interface RegisteredLead {
   slotNumber: number;
   status: LeadStatus;
   source?: string;
+  isVerified?: boolean;
 }
 
 export interface SlotItem {
@@ -67,12 +69,36 @@ export interface AdminStatsResponse {
   slots: SlotItem[];
 }
 
-export interface PublicLeadRegistrationPayload {
+export interface InitiateOtpRegistrationPayload {
   name: string;
-  phoneNumber: string;
+  whatsappNumber: string;
   email: string;
-  businessName: string;
-  businessCategory: string;
-  city: string;
+  password: string;
+  businessName?: string;
+  businessCategory?: string;
+  city?: string;
   notes?: string;
+}
+
+export interface InitiateOtpResponse {
+  success: boolean;
+  message: string;
+  sessionId: string;
+  maskedWhatsApp: string;
+  expiresInSeconds: number;
+  cooldownSeconds: number;
+  demoOtpPreview?: string;
+}
+
+export interface VerifyOtpPayload {
+  sessionId: string;
+  otp: string;
+}
+
+export interface VerifyOtpResponse {
+  success: boolean;
+  message: string;
+  lead: RegisteredLead;
+  slotNumber: number;
+  remainingSlots: number;
 }

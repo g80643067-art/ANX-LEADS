@@ -7,10 +7,6 @@ import {
   Settings,
   Bookmark,
   X,
-  ExternalLink,
-  ShieldCheck,
-  Lock,
-  ChevronRight,
 } from 'lucide-react';
 
 export type NavPage = 'dashboard' | 'leads' | 'menu' | 'analytics' | 'settings';
@@ -23,7 +19,6 @@ interface SidebarProps {
   isMobileOpen: boolean;
   onCloseMobile: () => void;
   totalLeadsCount: number;
-  onOpenAdmin?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -34,7 +29,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isMobileOpen,
   onCloseMobile,
   totalLeadsCount,
-  onOpenAdmin,
 }) => {
   const navItems: { id: NavPage; label: string; icon: React.FC<{ className?: string }>; badge?: string | number }[] = [
     {
@@ -93,7 +87,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           type="button"
           onClick={onCloseMobile}
-          className="lg:hidden p-1.5 rounded-lg text-stone-400 hover:text-white hover:bg-stone-800 transition-colors"
+          className="lg:hidden p-1.5 rounded-lg text-stone-400 hover:text-white hover:bg-stone-800 transition-colors cursor-pointer"
           aria-label="Close sidebar"
         >
           <X className="w-5 h-5" />
@@ -114,7 +108,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               key={item.id}
               type="button"
               onClick={() => handleNavClick(item.id)}
-              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all group ${
+              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer group ${
                 isActive
                   ? 'bg-amber-500 text-stone-950 shadow-sm font-bold'
                   : 'text-stone-300 hover:text-white hover:bg-stone-800/80'
@@ -147,7 +141,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* Saved CRM Quick Access */}
         <div className="pt-4 mt-4 border-t border-stone-800/80 space-y-1.5">
           <div className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-stone-500">
-            Shortlist & Admin
+            Shortlist
           </div>
           <button
             type="button"
@@ -165,39 +159,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
               {savedLeadsCount}
             </span>
           </button>
-
-          {/* Secure Admin Portal Link */}
-          {onOpenAdmin && (
-            <button
-              type="button"
-              onClick={() => {
-                onOpenAdmin();
-                onCloseMobile();
-              }}
-              className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold text-stone-300 hover:text-white hover:bg-stone-800/80 transition-all group cursor-pointer"
-            >
-              <div className="flex items-center gap-3">
-                <Lock className="w-4 h-4 text-emerald-400 group-hover:scale-110 transition-transform" />
-                <span>Admin Portal</span>
-              </div>
-              <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 uppercase">
-                /admin
-              </span>
-            </button>
-          )}
         </div>
       </div>
 
-      {/* Footer Info Box */}
-      <div className="p-3.5 m-3 rounded-xl bg-stone-950/70 border border-stone-800 text-stone-400 text-xs space-y-2">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-stone-300 font-bold text-[11px]">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>Outreach Engine Active</span>
-          </div>
+      {/* Footer Branding */}
+      <div className="p-4 border-t border-stone-800/90 text-[11px] text-stone-500 space-y-1">
+        <div className="flex items-center justify-between font-semibold text-stone-400">
+          <span>ANX Leads</span>
+          <span className="text-amber-400 font-mono">v3.0</span>
         </div>
-        <p className="text-[11px] text-stone-500 leading-relaxed">
-          Category WhatsApp templates & real business discovery pipeline.
+        <p className="text-[10px] text-stone-500 leading-tight">
+          Local business lead generation & WhatsApp outreach engine
         </p>
       </div>
     </div>
@@ -205,22 +177,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <>
-      {/* Desktop Fixed Sidebar */}
-      <aside className="hidden lg:block w-64 h-screen sticky top-0 shrink-0 z-30 shadow-xl">
+      {/* Desktop Persistent Sidebar */}
+      <aside className="hidden lg:block w-64 h-screen sticky top-0 shrink-0 select-none z-30">
         {sidebarContent}
       </aside>
 
-      {/* Mobile Drawer Overlay */}
+      {/* Mobile Backdrop & Drawer */}
       {isMobileOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden">
-          {/* Backdrop */}
+        <div className="fixed inset-0 z-50 lg:hidden flex">
           <div
-            className="fixed inset-0 bg-stone-950/70 backdrop-blur-xs transition-opacity"
+            className="fixed inset-0 bg-stone-950/80 backdrop-blur-sm transition-opacity"
             onClick={onCloseMobile}
           />
-
-          {/* Drawer */}
-          <div className="fixed inset-y-0 left-0 w-72 max-w-[85vw] shadow-2xl z-50 animate-in slide-in-from-left duration-200">
+          <div className="relative flex-1 flex flex-col max-w-xs w-full shadow-2xl z-10 animate-in slide-in-from-left duration-200">
             {sidebarContent}
           </div>
         </div>
